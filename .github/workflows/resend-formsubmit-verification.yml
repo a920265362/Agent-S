@@ -1,0 +1,119 @@
+name: Resend FormSubmit verification email
+
+on:
+  push:
+    branches:
+      - resend-formsubmit-verification-20260902
+    paths:
+      - .github/workflows/resend-formsubmit-verification.yml
+
+permissions:
+  contents: read
+
+jobs:
+  resend:
+    if: github.event.head_commit.message == 'Resend FormSubmit verification email'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install browser driver
+        run: |
+          google-chrome --version
+          npm init -y
+          npm install puppeteer-core@24.16.0
+
+      - name: Submit verification request through the live form
+        run: |
+          node <<'NODE'
+          const puppeteer = require('puppeteer-core');
+          const fs = require('fs');
+
+          (async () => {
+            const browser = await puppeteer.launch({
+              executablePath: '/usr/bin/google-chrome',
+              headless: true,
+              args: [
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled'
+              ]
+            });
+
+            try {
+              const page = await browser.newPage();
+              await page.setViewport({ width: 1440, height: 1000 });
+              await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36');
+              await page.goto('https://enjoydowas-phi.vercel.app/', {
+                waitUntil: 'networkidle2',
+                timeout: 90000
+              });
+
+              const formSelector = 'form.inline-form[data-quote-form]';
+              await page.waitForSelector(formSelector, { timeout: 30000 });
+
+              const fill = async (selector, value) => {
+                await page.$eval(selector, (el, v) => {
+                  el.focus();
+                  el.value = v;
+                  el.dispatchEvent(new Event('input', { bubbles: true }));
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                }, value);
+              };
+
+              await fill(`${formSelector} input[name="company"]`, 'ENJOY DOWAS Verification Test');
+              await fill(`${formSelector} input[name="name"]`, 'Website setup');
+              await fill(`${formSelector} input[name="email"]`, 'quanjiaxi8@gmail.com');
+              await fill(`${formSelector} input[name="market"]`, 'Verification only');
+              await page.select(`${formSelector} select[name="project"]`, 'Other');
+              await fill(`${formSelector} input[name="quantity"]`, 'Test only');
+              await fill(`${formSelector} input[name="launch"]`, 'Verification only');
+              await fill(`${formSelector} input[name="pack"]`, 'Not applicable');
+              await fill(`${formSelector} textarea[name="notes"]`, 'Verification email resend request. This is a setup test and can be ignored after activation.');
+
+              await Promise.allSettled([
+                page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90000 }),
+                page.click(`${formSelector} button[type="submit"]`)
+              ]);
+
+              await new Promise(resolve => setTimeout(resolve, 12000));
+              const finalUrl = page.url();
+              const title = await page.title();
+              const body = await page.evaluate(() => document.body.innerText.slice(0, 5000));
+              console.log('FINAL_URL:', finalUrl);
+              console.log('TITLE:', title);
+              console.log('BODY:', body);
+              await page.screenshot({ path: 'formsubmit-result.png', fullPage: true });
+
+              const normalized = `${title}\n${body}`.toLowerCase();
+              if (normalized.includes('just a moment') || normalized.includes('cloudflare')) {
+                throw new Error('Cloudflare challenge prevented the form submission');
+              }
+              if (normalized.includes('unable to submit') || normalized.includes('error 403') || normalized.includes('forbidden')) {
+                throw new Error('FormSubmit rejected the submission');
+              }
+              if (!finalUrl.includes('formsubmit.co') && !finalUrl.includes('enjoydowas-phi.vercel.app/thank-you')) {
+                throw new Error(`Unexpected final page: ${finalUrl}`);
+              }
+            } finally {
+              await browser.close();
+            }
+          })().catch(error => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
+
+      - name: Upload result screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: formsubmit-verification-result
+          path: formsubmit-result.png
+          if-no-files-found: ignore
+          retention-days: 1
